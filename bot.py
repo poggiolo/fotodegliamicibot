@@ -128,11 +128,17 @@ def get_last_month_info():
 def is_user_allowed(user) -> bool:
     if not user:
         return False
+    
+    allowed = False
     if user.id in ALLOWED_USERS:
-        return True
-    if user.username and f"@{user.username.lower()}" in ALLOWED_USERS:
-        return True
-    return False
+        allowed = True
+    elif user.username and f"@{user.username.lower()}" in ALLOWED_USERS:
+        allowed = True
+    
+    if not allowed:
+        logger.warning(f"Unauthorized access attempt by user {user.id} (@{user.username})")
+    
+    return allowed
 
 def get_user_key(user) -> str:
     """Returns a unique string key for the user (ID or username)."""
