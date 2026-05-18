@@ -36,7 +36,7 @@ def telegram_retry():
         reraise=True
     )
 
-async def send_media_group_with_retry(context, chat_id, media):
+async def send_media_group_with_retry(context, chat_id, media, disable_notification=False):
     """Sends a media group with precise handling of RetryAfter."""
     max_attempts = 5
     for attempt in range(max_attempts):
@@ -45,7 +45,8 @@ async def send_media_group_with_retry(context, chat_id, media):
                 chat_id=chat_id,
                 media=media,
                 write_timeout=120,
-                read_timeout=120
+                read_timeout=120,
+                disable_notification=disable_notification
             )
         except telegram.error.RetryAfter as e:
             wait_time = e.retry_after + 1
@@ -58,20 +59,20 @@ async def send_media_group_with_retry(context, chat_id, media):
             raise
 
 @telegram_retry()
-async def send_message_with_retry(context, chat_id, text):
+async def send_message_with_retry(context, chat_id, text, disable_notification=False):
     """Sends a message, respecting flood control via tenacity."""
     try:
-        return await context.bot.send_message(chat_id=chat_id, text=text)
+        return await context.bot.send_message(chat_id=chat_id, text=text, disable_notification=disable_notification)
     except telegram.error.RetryAfter as e:
         await asyncio.sleep(e.retry_after + 1)
         raise
 
-async def notify_allowed_users(context: ContextTypes.DEFAULT_TYPE, text: str):
+async def notify_allowed_users(context: ContextTypes.DEFAULT_TYPE, text: str, disable_notification: bool = True):
     """Sends a message to all allowed users who have a numeric ID."""
     for user_ref in ALLOWED_USERS:
         if isinstance(user_ref, int):
             try:
-                await send_message_with_retry(context, user_ref, text)
+                await send_message_with_retry(context, user_ref, text, disable_notification=disable_notification)
             except Exception as e:
                 logger.error(f"Could not message user {user_ref}: {e}")
         else:
@@ -194,12 +195,11 @@ async def send_photos_to_channel(context: ContextTypes.DEFAULT_TYPE):
                 try:
                     is_video = asset['type'] == 'VIDEO'
                     content = await immich.download_asset(asset['id'], is_video=is_video)
-                    caption = f"{year}/{month_num} - Photos" if i == 0 and idx == 0 else None
                     
                     if asset['type'] == 'IMAGE':
-                        media_group.append(InputMediaPhoto(media=content, caption=caption))
+                        media_group.append(InputMediaPhoto(media=content))
                     elif is_video:
-                        media_group.append(InputMediaVideo(media=content, caption=caption))
+                        media_group.append(InputMediaVideo(media=content))
                 except Exception as e:
                     asset_name = asset.get('originalFileName', asset['id'])
                     logger.error(f"Failed to download/prepare asset {asset_name}: {e}")
@@ -207,7 +207,17 @@ async def send_photos_to_channel(context: ContextTypes.DEFAULT_TYPE):
 
             if media_group:
                 try:
-                    await send_media_group_with_retry(context, CHANNEL_ID, media_group)
+                    # Determine if this is the last message to be sent
+                    is_last_batch = (i + 10) >= len(assets)
+                    
+                    # We want only the LAST message of the entire process to be loud.
+                    # If there's a description coming later, this batch should be silent.
+                    # If there's NO description and this is the last batch, it should be loud.
+                    disable_notification = True
+                    if not description and is_last_batch:
+                        disable_notification = False
+                    
+                    await send_media_group_with_retry(context, CHANNEL_ID, media_group, disable_notification=disable_notification)
                     # Base delay between successful batches
                     await asyncio.sleep(5)
                 except Exception as e:
@@ -217,7 +227,7 @@ async def send_photos_to_channel(context: ContextTypes.DEFAULT_TYPE):
         # Send album description as a final message if it exists
         if description:
             try:
-                await send_message_with_retry(context, CHANNEL_ID, description)
+                await send_message_with_retry(context, CHANNEL_ID, description, disable_notification=False)
             except Exception as e:
                 logger.error(f"Failed to send album description: {e}")
 
